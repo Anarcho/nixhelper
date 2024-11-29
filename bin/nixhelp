@@ -6,38 +6,46 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 MODULE_DIR="$(dirname "$SCRIPT_DIR")/modules"
 export NIXHELP_MODULE_DIR="$MODULE_DIR"
 
+# Basic colors for error reporting before modules are loaded
+RED='\033[0;31m'
+NC='\033[0m'
+
 # Ensure module directory exists
 if [[ ! -d "$MODULE_DIR" ]]; then
-    echo "Error: Module directory not found at $MODULE_DIR"
-    echo "Expected location: $MODULE_DIR"
-    exit 1
+  echo -e "${RED}Error: Module directory not found at $MODULE_DIR${NC}"
+  echo "Expected location: $MODULE_DIR"
+  exit 1
 fi
 
 # Source all module scripts
-for module in \
-    "config.sh" \
-    "logging.sh" \
-    "utils.sh" \
-    "init.sh" \
-    "host_manager.sh" \
-    "build_manager.sh" \
-    "vm.sh" \
-    "ssh.sh" \
-    "git.sh" \
-    "backup.sh" \
-    "health.sh" \
-    "module_manager.sh" \
-    "dev_environment_manager.sh" \
-    "list_manager.sh" \
-    "help.sh"
-do
-    if [[ -f "${MODULE_DIR}/${module}" ]]; then
-        source "${MODULE_DIR}/${module}"
-    else
-        echo "Error: Required module not found: ${module}"
-        echo "Looking in: ${MODULE_DIR}"
-        exit 1
-    fi
+REQUIRED_MODULES=(
+  "config.sh"
+  "logging.sh"
+  "utils.sh"
+  "init.sh"
+  "host_manager.sh"
+  "build_manager.sh"
+  "vm.sh"
+  "ssh.sh"
+  "git.sh"
+  "backup.sh"
+  "health.sh"
+  "module_manager.sh"
+  "dev_environment_manager.sh"
+  "list_manager.sh"
+  "help.sh"
+  "template_manager.sh"
+  "template_installer.sh"
+)
+
+for module in "${REQUIRED_MODULES[@]}"; do
+  if [[ -f "${MODULE_DIR}/${module}" ]]; then
+    source "${MODULE_DIR}/${module}"
+  else
+    echo -e "${RED}Error: Required module not found: ${module}${NC}"
+    echo "Looking in: ${MODULE_DIR}"
+    exit 1
+  fi
 done
 
 # Initialize configuration
@@ -45,313 +53,332 @@ init_config
 
 # Function to display error and exit
 die() {
-    error "$1"
-    exit 1
+  error "$1"
+  exit 1
 }
 
 # Parse command line arguments
 parse_args() {
-    # Parse global flags first
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -v|--verbose)
-                export VERBOSE=true
-                shift
-                ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
-            --version)
-                show_version
-                exit 0
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-
-    local command="$1"
-    shift || true
-
-    case "$command" in
-        # Core commands
-        "init")
-            [[ -z "$1" ]] && die "Path required for init"
-            init_repository "$1"
-            ;;
-        "check")
-            check_health
-            ;;
-        "update")
-            git_sync
-            ;;
-        # Host management
-        "host")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "create")
-                    [[ -z "$1" ]] && die "Host name required"
-                    create_host "$1" "${2:-minimal}"
-                    ;;
-                "list")
-                    list_hosts
-                    ;;
-                "remove")
-                    [[ -z "$1" ]] && die "Host name required"
-                    remove_host "$1"
-                    ;;
-                "rename")
-                    [[ -z "$1" || -z "$2" ]] && die "Old and new host names required"
-                    rename_host "$1" "$2"
-                    ;;
-                *)
-                    die "Unknown host subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # Module management
-        "module")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "create")
-                    [[ -z "$1" || -z "$2" ]] && die "Category and name required"
-                    create_module "$1" "$2" "${3:-nixos}"
-                    ;;
-                "enable")
-                    [[ -z "$1" || -z "$2" || -z "$3" ]] && die "Category, name, and target required"
-                    enable_module "$1" "$2" "$3"
-                    ;;
-                "disable")
-                    [[ -z "$1" || -z "$2" || -z "$3" ]] && die "Category, name, and target required"
-                    disable_module "$1" "$2" "$3"
-                    ;;
-                "list")
-                    list_modules "$1"
-                    ;;
-                "check")
-                    [[ -z "$1" || -z "$2" ]] && die "Category and name required"
-                    check_module "$1" "$2"
-                    ;;
-                *)
-                    die "Unknown module subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # Development environments
-        "dev")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "create")
-                    [[ -z "$1" ]] && die "Environment type required"
-                    create_dev_environment "$1" "$2"
-                    ;;
-                "activate")
-                    [[ -z "$1" ]] && die "Environment type required"
-                    activate_dev_environment "$1"
-                    ;;
-                "remove")
-                    [[ -z "$1" ]] && die "Environment type required"
-                    remove_dev_environment "$1"
-                    ;;
-                "list")
-                    list_dev_environments
-                    ;;
-                "update")
-                    [[ -z "$1" ]] && die "Environment type required"
-                    update_dev_environment "$1"
-                    ;;
-                *)
-                    die "Unknown dev subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # Build management
-        "build")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "check")
-                    [[ -z "$1" ]] && die "Host name required"
-                    validate_config "$1" "$2"
-                    ;;
-                "rollback")
-                    rollback_build "$@"
-                    ;;
-                *)
-                    [[ -z "$subcommand" ]] && die "Host name required"
-                    build_config "$subcommand" "$@"
-                    ;;
-            esac
-            ;;
-        # VM management
-        "vm")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "setup")
-                    setup_vm "$1"
-                    ;;
-                "sync")
-                    [[ -z "$1" ]] && die "Host name required"
-                    sync_to_vm "$1"
-                    ;;
-                "deploy")
-                    [[ -z "$1" ]] && die "Host name required"
-                    deploy_to_vm "$1" "$2"
-                    ;;
-                "status")
-                    [[ -z "$1" ]] && die "Host name required"
-                    get_vm_status "$1"
-                    ;;
-                *)
-                    die "Unknown vm subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # Backup management
-        "backup")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "create")
-                    create_backup
-                    ;;
-                "list")
-                    list_backups
-                    ;;
-                "restore")
-                    [[ -z "$1" ]] && die "Backup name required"
-                    restore_backup "$1"
-                    ;;
-                "verify")
-                    [[ -z "$1" ]] && die "Backup name required"
-                    verify_backup "$1"
-                    ;;
-                "delete")
-                    [[ -z "$1" ]] && die "Backup name required"
-                    delete_backup "$1"
-                    ;;
-                *)
-                    die "Unknown backup subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # Git management
-        "git")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "init")
-                    git_init "${1:-.}"
-                    ;;
-                "status")
-                    git_status
-                    ;;
-                "branch")
-                    [[ -z "$1" ]] && die "Branch action required"
-                    git_branch "$@"
-                    ;;
-                "sync")
-                    git_sync
-                    ;;
-                "commit")
-                    [[ -z "$1" ]] && die "Commit message required"
-                    git_commit "$1"
-                    ;;
-                *)
-                    die "Unknown git subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # List commands
-        "list")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "hosts")
-                    list_hosts
-                    ;;
-                "users")
-                    list_users
-                    ;;
-                "modules")
-                    list_modules "$@"
-                    ;;
-                "dev")
-                    list_dev_environments
-                    ;;
-                "generations")
-                    list_generations
-                    ;;
-                "backups")
-                    list_backups
-                    ;;
-                *)
-                    die "Unknown list subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # System management
-        "system")
-            local subcommand="$1"
-            shift || true
-            case "$subcommand" in
-                "upgrade")
-                    system_upgrade "$@"
-                    ;;
-                "cleanup")
-                    system_cleanup "$@"
-                    ;;
-                "rollback")
-                    system_rollback "$@"
-                    ;;
-                "gc")
-                    system_garbage_collect "$@"
-                    ;;
-                *)
-                    die "Unknown system subcommand: ${subcommand}"
-                    ;;
-            esac
-            ;;
-        # Help and documentation
-        "help")
-            show_help "$1"
-            ;;
-        "examples")
-            show_examples
-            ;;
-        # Default case
-        "")
-            show_help
-            ;;
-        *)
-            die "Unknown command: ${command}"
-            ;;
+  # Parse global flags first
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -v | --verbose)
+      export VERBOSE=true
+      shift
+      ;;
+    -h | --help)
+      show_help
+      exit 0
+      ;;
+    --version)
+      show_version
+      exit 0
+      ;;
+    *)
+      break
+      ;;
     esac
+  done
+
+  local command="$1"
+  shift || true
+
+  case "$command" in
+  # Core commands
+  "init")
+    [[ -z "$1" ]] && die "Path required for init"
+    init_repository "$1"
+    ;;
+  "check")
+    check_health
+    ;;
+  "update")
+    git_sync
+    ;;
+
+  # Host management
+  "host")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "create")
+      [[ -z "$1" ]] && die "Host name required"
+      create_host "$1" "${2:-minimal}"
+      ;;
+    "list")
+      list_hosts
+      ;;
+    "remove")
+      [[ -z "$1" ]] && die "Host name required"
+      remove_host "$1"
+      ;;
+    "rename")
+      [[ -z "$1" || -z "$2" ]] && die "Old and new host names required"
+      rename_host "$1" "$2"
+      ;;
+    *)
+      die "Unknown host subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # Module management
+  "module")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "create")
+      [[ -z "$1" || -z "$2" ]] && die "Category and name required"
+      create_module "$1" "$2" "${3:-nixos}"
+      ;;
+    "enable")
+      [[ -z "$1" || -z "$2" || -z "$3" ]] && die "Category, name, and target required"
+      enable_module "$1" "$2" "$3"
+      ;;
+    "disable")
+      [[ -z "$1" || -z "$2" || -z "$3" ]] && die "Category, name, and target required"
+      disable_module "$1" "$2" "$3"
+      ;;
+    "list")
+      list_modules "$1"
+      ;;
+    "check")
+      [[ -z "$1" || -z "$2" ]] && die "Category and name required"
+      check_module "$1" "$2"
+      ;;
+    *)
+      die "Unknown module subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # Development environments
+  "dev")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "create")
+      [[ -z "$1" ]] && die "Environment type required"
+      create_dev_environment "$1"
+      ;;
+    "activate")
+      [[ -z "$1" ]] && die "Environment type required"
+      activate_dev_environment "$1"
+      ;;
+    "remove")
+      [[ -z "$1" ]] && die "Environment type required"
+      remove_dev_environment "$1"
+      ;;
+    "list")
+      list_dev_environments
+      ;;
+    "update")
+      [[ -z "$1" ]] && die "Environment type required"
+      update_dev_environment "$1"
+      ;;
+    *)
+      die "Unknown dev subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # Build management
+  "build")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "check")
+      [[ -z "$1" ]] && die "Host name required"
+      validate_config "$1" "$2"
+      ;;
+    "rollback")
+      rollback_build "$@"
+      ;;
+    *)
+      [[ -z "$subcommand" ]] && die "Host name required"
+      build_config "$subcommand" "$@"
+      ;;
+    esac
+    ;;
+
+  # VM management
+  "vm")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "setup")
+      setup_vm "$1"
+      ;;
+    "sync")
+      [[ -z "$1" ]] && die "Host name required"
+      sync_to_vm "$1"
+      ;;
+    "deploy")
+      [[ -z "$1" ]] && die "Host name required"
+      deploy_to_vm "$1" "$2"
+      ;;
+    "status")
+      [[ -z "$1" ]] && die "Host name required"
+      get_vm_status "$1"
+      ;;
+    *)
+      die "Unknown vm subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # Backup management
+  "backup")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "create")
+      create_backup
+      ;;
+    "list")
+      list_backups
+      ;;
+    "restore")
+      [[ -z "$1" ]] && die "Backup name required"
+      restore_backup "$1"
+      ;;
+    "verify")
+      [[ -z "$1" ]] && die "Backup name required"
+      verify_backup "$1"
+      ;;
+    "delete")
+      [[ -z "$1" ]] && die "Backup name required"
+      delete_backup "$1"
+      ;;
+    *)
+      die "Unknown backup subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # Git management
+  "git")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "init")
+      git_init "${1:-.}"
+      ;;
+    "status")
+      git_status
+      ;;
+    "branch")
+      [[ -z "$1" ]] && die "Branch action required"
+      git_branch "$@"
+      ;;
+    "sync")
+      git_sync
+      ;;
+    "commit")
+      [[ -z "$1" ]] && die "Commit message required"
+      git_commit "$1"
+      ;;
+    *)
+      die "Unknown git subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # Template management
+  "template")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "install")
+      install_default_templates "${1:-false}"
+      ;;
+    "list")
+      list_templates "${1:-all}"
+      ;;
+    "add")
+      [[ -z "$1" || -z "$2" || -z "$3" ]] && die "Category, name, and source path required"
+      install_template "$3" "$1" "$2"
+      ;;
+    "remove")
+      [[ -z "$1" || -z "$2" ]] && die "Category and name required"
+      remove_template "$1" "$2"
+      ;;
+    "apply")
+      [[ -z "$1" || -z "$2" || -z "$3" ]] && die "Category, name, and target path required"
+      apply_template "$1" "$2" "$3" "$4"
+      ;;
+    "update")
+      install_default_templates "true"
+      ;;
+    *)
+      die "Unknown template subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # List commands
+  "list")
+    local subcommand="$1"
+    shift || true
+    case "$subcommand" in
+    "hosts")
+      list_hosts
+      ;;
+    "users")
+      list_users
+      ;;
+    "modules")
+      list_modules "$@"
+      ;;
+    "dev")
+      list_dev_environments
+      ;;
+    "generations")
+      list_generations
+      ;;
+    "backups")
+      list_backups
+      ;;
+    *)
+      die "Unknown list subcommand: ${subcommand}"
+      ;;
+    esac
+    ;;
+
+  # Help and documentation
+  "help")
+    show_help "$1"
+    ;;
+  "examples")
+    show_examples
+    ;;
+  # Default case
+  "")
+    show_help
+    ;;
+  *)
+    die "Unknown command: ${command}"
+    ;;
+  esac
 }
 
 # Main entry point
 main() {
-    # Check if running as root
-    if [[ $EUID -eq 0 ]]; then
-        die "This script should not be run as root"
-    fi
+  # Check if running as root
+  if [[ $EUID -eq 0 ]]; then
+    die "This script should not be run as root"
+  fi
 
-    # Check dependencies
-    if ! check_dependencies; then
-        die "Missing required dependencies"
-    fi
+  # Check dependencies
+  if ! check_dependencies; then
+    die "Missing required dependencies"
+  fi
 
-    # Parse arguments
-    parse_args "$@"
+  # Parse arguments
+  parse_args "$@"
 }
 
 # Run main if script is not sourced
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
+  main "$@"
 fi
