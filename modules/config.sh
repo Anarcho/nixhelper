@@ -65,7 +65,7 @@ resolve_paths() {
     export CONFIG_FILE BACKUP_DIR TEMPLATE_DIR LOG_DIR LOG_FILE
 }
 
-# Module categories (only declare if not already declared)
+# Module categories
 if [[ -z "${MODULE_CATEGORIES[*]}" ]]; then
     declare -A MODULE_CATEGORIES=(
         ["core"]="Core system modules"
@@ -78,7 +78,7 @@ if [[ -z "${MODULE_CATEGORIES[*]}" ]]; then
     )
 fi
 
-# Host types (only declare if not already declared)
+# Host types
 if [[ -z "${HOST_TYPES[*]}" ]]; then
     declare -a HOST_TYPES=(
         "desktop"
@@ -89,16 +89,12 @@ if [[ -z "${HOST_TYPES[*]}" ]]; then
     )
 fi
 
-# Default settings (only declare if not already declared)
+# Default settings
 if [[ -z "${DEFAULT_SETTINGS[*]}" ]]; then
     declare -A DEFAULT_SETTINGS=(
         ["MAX_LOG_SIZE"]="10M"
         ["MAX_LOG_FILES"]="5"
         ["VERBOSE"]="false"
-        ["VM_USER"]="root"
-        ["VM_HOST"]="localhost"
-        ["VM_PORT"]="22"
-        ["VM_PATH"]="/etc/nixos"
     )
 fi
 
@@ -148,12 +144,6 @@ REPO_PATH="${REPO_PATH}"
 CONFIG_DIR="${CONFIG_DIR}"
 CACHE_DIR="${CACHE_DIR}"
 DATA_DIR="${DATA_DIR}"
-
-# VM settings
-VM_USER="${VM_USER}"
-VM_HOST="${VM_HOST}"
-VM_PORT="${VM_PORT}"
-VM_PATH="${VM_PATH}"
 
 # Logging
 VERBOSE=${VERBOSE}
@@ -218,6 +208,35 @@ set_config() {
     declare -g "$key"="$value"
 }
 
+# Get VM-specific configuration
+get_vm_config() {
+    local hostname="$1"
+    local property="$2"  # IP, USER, PORT
+    local key="VM_${hostname}_${property}"
+    
+    get_config "$key"
+}
+
+# Set VM-specific configuration
+set_vm_config() {
+    local hostname="$1"
+    local property="$2"  # IP, USER, PORT
+    local value="$3"
+    local key="VM_${hostname}_${property}"
+    
+    set_config "$key" "$value"
+}
+
+# Show VM-specific configuration
+show_vm_config() {
+    local hostname="$1"
+    
+    echo -e "${BOLD}VM Configuration for ${hostname}:${NC}"
+    echo "IP Address: $(get_vm_config "$hostname" "IP")"
+    echo "Username:   $(get_vm_config "$hostname" "USER")"
+    echo "Port:      $(get_vm_config "$hostname" "PORT")"
+}
+
 # Show current configuration
 show_config() {
     echo -e "${BOLD}NixHelp Configuration${NC}"
@@ -229,11 +248,17 @@ show_config() {
     echo "Cache Dir:  $CACHE_DIR"
     echo "Data Dir:   $DATA_DIR"
     echo
-    echo -e "${BOLD}VM Settings:${NC}"
-    echo "User: $VM_USER"
-    echo "Host: $VM_HOST"
-    echo "Port: $VM_PORT"
-    echo "Path: $VM_PATH"
+    echo -e "${BOLD}VM Configurations:${NC}"
+    if [[ -f "${CONFIG_FILE}" ]]; then
+        grep "^VM_.*_" "${CONFIG_FILE}" | while read -r line; do
+            local hostname
+            hostname=$(echo "$line" | cut -d'_' -f2)
+            if [[ -n "$hostname" && "$hostname" != *"="* ]]; then
+                show_vm_config "$hostname"
+                echo
+            fi
+        done
+    fi
     echo
     echo -e "${BOLD}Logging:${NC}"
     echo "Verbose: $VERBOSE"
@@ -242,7 +267,7 @@ show_config() {
     echo
     if [[ -f "${CONFIG_FILE}" ]]; then
         echo -e "${BOLD}Custom Settings:${NC}"
-        grep -v '^#' "${CONFIG_FILE}" | grep -v '^$' || echo "No custom settings"
+        grep -v '^#' "${CONFIG_FILE}" | grep -v '^VM_' | grep -v '^$' || echo "No custom settings"
     fi
 }
 
@@ -250,7 +275,8 @@ show_config() {
 export RED GREEN YELLOW BLUE PURPLE CYAN BOLD NC
 export -A MODULE_CATEGORIES DEFAULT_SETTINGS
 export -a HOST_TYPES
-export -f find_repo_root resolve_paths load_config init_config get_config set_config show_config
+export -f find_repo_root resolve_paths load_config init_config get_config set_config
+export -f get_vm_config set_vm_config show_vm_config show_config
 
 # Initialize if this script is being sourced
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then

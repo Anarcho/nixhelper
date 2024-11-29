@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-# Dynamically determine REPO_PATH based on script location
 # Get the directory where this script is located
 SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
@@ -103,12 +102,25 @@ EOF
         "vm")
             cat > "${target_path}/host-type/vm.nix" <<'EOF'
 { config, lib, pkgs, ... }: {
-  services.openssh.enable = true;
+  # Enable SSH server
+  services.openssh = {
+    enable = true;
+    settings = {
+      PermitRootLogin = "no";
+      PasswordAuthentication = false;
+    };
+  };
+
+  # VM-specific packages
   environment.systemPackages = with pkgs; [
     # Add VM-specific packages here
   ];
 }
 EOF
+            # Prompt for VM setup if this is a VM host
+            if confirm_action "Would you like to configure VM access for ${host_name}?"; then
+                setup_vm "${host_name}"
+            fi
             ;;
         "wsl")
             cat > "${target_path}/host-type/wsl.nix" <<'EOF'
@@ -178,11 +190,24 @@ generate_hardware_config() {
 
     log "INFO" "Generating hardware configuration for ${host_name}"
 
-    if [[ "${VM_HOST}" != "localhost" ]]; then
-        if ! check_vm_connectivity; then
+    # Get host-specific VM config if available
+    local target_host="localhost"
+    local target_user=""
+    local target_port=""
+    local target_ip=""
+
+    if [[ -n "$(get_vm_config "$host_name" "IP")" ]]; then
+        target_ip=$(get_vm_config "$host_name" "IP")
+        target_user=$(get_vm_config "$host_name" "USER")
+        target_port=$(get_vm_config "$host_name" "PORT")
+        target_host="$target_ip"
+    fi
+
+    if [[ "$target_host" != "localhost" ]]; then
+        if ! check_vm_connectivity "$host_name"; then
             return 1
         fi
-        ssh -p "${VM_PORT}" "${VM_USER}@${VM_HOST}" \
+        ssh -p "${target_port}" "${target_user}@${target_host}" \
             "sudo nixos-generate-config --show-hardware-config" > "${target_path}/hardware-configuration.nix"
     else
         sudo nixos-generate-config --show-hardware-config > "${target_path}/hardware-configuration.nix"
@@ -211,6 +236,13 @@ remove_host() {
 
     create_backup
 
+    # Remove VM configuration if it exists
+    if [[ -n "$(get_vm_config "$host_name" "IP")" ]]; then
+        log "INFO" "Removing VM configuration for ${host_name}"
+        # Remove all VM-related configs for this host
+        sed -i "/^VM_${host_name}_/d" "${CONFIG_FILE}"
+    fi
+
     rm -rf "${target_path}"
     sed -i "/nixosConfigurations.*${host_name}/,/};/d" "${REPO_PATH}/flake.nix"
 
@@ -235,10 +267,29 @@ rename_host() {
 
     create_backup
 
+    # Update directory and files
     mv "${old_path}" "${new_path}"
     sed -i "s/hostName = \"${old_name}\"/hostName = \"${new_name}\"/" "${new_path}/configuration.nix"
     sed -i "s/${old_name} = nixpkgs/${new_name} = nixpkgs/" "${REPO_PATH}/flake.nix"
     sed -i "s/hosts\/${old_name}/hosts\/${new_name}/" "${REPO_PATH}/flake.nix"
+
+    # Update VM configuration if it exists
+    if [[ -n "$(get_vm_config "$old_name" "IP")" ]]; then
+        log "INFO" "Updating VM configuration for renamed host"
+        local ip_addr=$(get_vm_config "$old_name" "IP")
+        local user=$(get_vm_config "$old_name" "USER")
+        local port=$(get_vm_config "$old_name" "PORT")
+        local path=$(get_vm_config "$old_name" "PATH")
+
+        # Remove old configs
+        sed -i "/^VM_${old_name}_/d" "${CONFIG_FILE}"
+
+        # Add new configs
+        set_vm_config "$new_name" "IP" "$ip_addr"
+        set_vm_config "$new_name" "USER" "$user"
+        set_vm_config "$new_name" "PORT" "$port"
+        set_vm_config "$new_name" "PATH" "$path"
+    fi
 
     log "SUCCESS" "Host renamed from ${old_name} to ${new_name}"
 }
