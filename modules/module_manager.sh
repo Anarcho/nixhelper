@@ -3,6 +3,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/logging.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/template_manager.sh"
 
 create_module() {
     local category="$1"
@@ -22,114 +23,91 @@ create_module() {
     # Create module directory structure
     mkdir -p "${module_path}"/{config,lib}
 
-    # Create default.nix based on module type
-    case "${module_type}" in
-        "nixos")
-            cat > "${module_path}/default.nix" <<EOF
-{ config, lib, pkgs, ... }:
-
-with lib;
-let
-    cfg = config.modules.${category}.${name};
-in {
-    options.modules.${category}.${name} = {
-        enable = mkEnableOption "Enable ${name} module";
-
-        settings = mkOption {
-            type = types.attrsOf types.anything;
-            default = {};
-            description = "Module settings for ${name}";
-        };
-    };
-
-    config = mkIf cfg.enable {
-        # Module implementation goes here
-    };
+    # Prepare template variables
+    local template_vars=$(cat <<EOF
+{
+    "category": "${category}",
+    "name": "${name}",
+    "description": "${MODULE_CATEGORIES[$category]} module for ${name}"
 }
 EOF
+)
+
+    # Select and apply appropriate template
+    local template_category="base/module"
+    local template_name="${module_type}"
+    if ! apply_template "$template_category" "$template_name" "$module_path" "$template_vars"; then
+        error "Failed to apply module template"
+        rm -rf "${module_path}"
+        return 1
+    fi
+
+    # Additional module-specific setup
+    case "${category}" in
+        "development")
+            # Add development-specific configurations
+            if [[ -f "${module_path}/default.nix" ]]; then
+                local dev_template_category="development"
+                local dev_template_name="${name}"
+                if apply_template "$dev_template_category" "$dev_template_name" "${module_path}/config" "$template_vars" 2>/dev/null; then
+                    log "INFO" "Applied development-specific template for ${name}"
+                fi
+            fi
             ;;
-        "home-manager")
-            cat > "${module_path}/default.nix" <<EOF
-{ config, lib, pkgs, ... }:
-
-with lib;
-let
-    cfg = config.modules.${category}.${name};
-in {
-    options.modules.${category}.${name} = {
-        enable = mkEnableOption "Enable ${name} module";
-
-        settings = mkOption {
-            type = types.attrsOf types.anything;
-            default = {};
-            description = "Module settings for ${name}";
-        };
-    };
-
-    config = mkIf cfg.enable {
-        home = {
-            # Home-manager specific configuration
-        };
-
-        programs = {
-            # Program configurations
-        };
-    };
-}
-EOF
+        "editor")
+            # Add editor-specific configurations
+            if [[ -f "${module_path}/default.nix" ]]; then
+                local editor_template_category="configs/editor"
+                local editor_template_name="${name}"
+                if apply_template "$editor_template_category" "$editor_template_name" "${module_path}/config" "$template_vars" 2>/dev/null; then
+                    log "INFO" "Applied editor-specific template for ${name}"
+                fi
+            fi
             ;;
         *)
-            error "Invalid module type: ${module_type}"
-            return 1
+            # Check for category-specific templates
+            local custom_template_category="configs/${category}"
+            local custom_template_name="${name}"
+            if apply_template "$custom_template_category" "$custom_template_name" "${module_path}/config" "$template_vars" 2>/dev/null; then
+                log "INFO" "Applied category-specific template for ${name}"
+            fi
             ;;
     esac
 
-    # Create README.md
-    cat > "${module_path}/README.md" <<EOF
-# ${name} Module
-
-## Overview
-
-Module Category: ${category}
-Type: ${module_type}
-
-## Description
-Add module description here.
-
-## Options
-- \`enable\`: Enable/disable this module
-- \`settings\`: Module-specific settings
-
-## Usage
-\`\`\`nix
-{
-    modules.${category}.${name} = {
-        enable = true;
-        settings = {
-            # Add settings here
-        };
-    };
-}
-\`\`\`
-
-## Dependencies
-
-List module dependencies here.
-
-## Example Configuration
-\`\`\`nix
-{
-    modules.${category}.${name} = {
-        enable = true;
-        settings = {
-            # Example settings
-        };
-    };
-}
-\`\`\`
-EOF
+    # Add module to flake.nix if it's a NixOS module
+    if [[ "${module_type}" == "nixos" ]]; then
+        add_module_to_flake "${category}" "${name}"
+    fi
 
     success "Module created at ${module_path}"
+}
+
+add_module_to_flake() {
+    local category="$1"
+    local name="$2"
+    local flake_path="${REPO_PATH}/flake.nix"
+
+    if [[ ! -f "${flake_path}" ]]; then
+        error "flake.nix not found in ${REPO_PATH}"
+        return 1
+    }
+
+    # Check if module is already in flake.nix
+    if grep -q "modules.${category}.${name}" "${flake_path}"; then
+        log "INFO" "Module already exists in flake.nix"
+        return 0
+    fi
+
+    # Add module to nixosModules section
+    local insert_line
+    insert_line=$(grep -n "nixosModules = {" "${flake_path}" | cut -d: -f1)
+
+    if [[ -n "${insert_line}" ]]; then
+        sed -i "${insert_line}a\\        ${category}-${name} = ./modules/${category}/${name};" "${flake_path}"
+        log "SUCCESS" "Added module to flake.nix"
+    else
+        warning "Could not find nixosModules section in flake.nix"
+    fi
 }
 
 enable_module() {
@@ -170,6 +148,16 @@ enable_module() {
         success "Enabled module ${category}/${name} for ${target}"
     else
         warning "Module already enabled for ${target}"
+    fi
+
+    # Apply any template-specific activation steps
+    local template_meta="${module_path}/template.json"
+    if [[ -f "$template_meta" ]]; then
+        local activation_script="${module_path}/activate.sh"
+        if [[ -f "$activation_script" ]]; then
+            log "INFO" "Running template activation script"
+            bash "$activation_script" "$target"
+        fi
     fi
 }
 
@@ -217,18 +205,32 @@ list_modules() {
                     if [[ -d "$module" ]]; then
                         local name=$(basename "$module")
                         local type="NixOS"
+                        local template_info=""
 
-                        # Determine module type
+                        # Determine module type and get template info
                         if grep -q "home = {" "$module/default.nix" 2>/dev/null; then
                             type="Home Manager"
                         fi
 
-                        echo -e "  - ${name} (${type})"
+                        if [[ -f "${module}/template.json" ]]; then
+                            template_info=" (Template-based)"
+                        fi
 
-                        if [[ "$show_details" == "true" && -f "$module/README.md" ]]; then
-                            echo "    Description:"
-                            sed -n '/^## Description/,/^##/p' "$module/README.md" | \
-                                grep -v '^##' | sed 's/^/      /'
+                        echo -e "  - ${name} (${type})${template_info}"
+
+                        if [[ "$show_details" == "true" ]]; then
+                            # Show template details if available
+                            if [[ -f "${module}/template.json" ]]; then
+                                local template_version
+                                template_version=$(jq -r '.version // "unknown"' "${module}/template.json")
+                                echo "    Template version: ${template_version}"
+                            fi
+                            # Show module documentation
+                            if [[ -f "$module/README.md" ]]; then
+                                echo "    Description:"
+                                sed -n '/^## Description/,/^##/p' "$module/README.md" | \
+                                    grep -v '^##' | sed 's/^/      /'
+                            fi
                         fi
                     fi
                 done
@@ -262,6 +264,14 @@ check_module() {
         fi
     done
 
+    # Validate template metadata if present
+    if [[ -f "${module_path}/template.json" ]]; then
+        if ! validate_template_meta "$module_path"; then
+            error "Invalid template metadata"
+            status=1
+        fi
+    fi
+
     # Validate Nix syntax
     if ! nix-instantiate --parse "${module_path}/default.nix" &>/dev/null; then
         error "Invalid Nix syntax in default.nix"
@@ -281,4 +291,4 @@ check_module() {
 }
 
 # Export functions
-export -f create_module enable_module disable_module list_modules check_module
+export -f create_module enable_module disable_module list_modules check_module add_module_to_flake
