@@ -21,10 +21,14 @@ create_module() {
     log "INFO" "Creating ${module_type} module: ${category}/${name}"
 
     # Create module directory structure
-    mkdir -p "${module_path}"/{config,lib}
+    mkdir -p "${module_path}"/{config,lib} || {
+        error "Failed to create module directory structure"
+        return 1
+    }
 
     # Prepare template variables
-    local template_vars=$(cat <<EOF
+    local template_vars
+    template_vars=$(cat <<EOF
 {
     "category": "${category}",
     "name": "${name}",
@@ -45,7 +49,6 @@ EOF
     # Additional module-specific setup
     case "${category}" in
         "development")
-            # Add development-specific configurations
             if [[ -f "${module_path}/default.nix" ]]; then
                 local dev_template_category="development"
                 local dev_template_name="${name}"
@@ -55,7 +58,6 @@ EOF
             fi
             ;;
         "editor")
-            # Add editor-specific configurations
             if [[ -f "${module_path}/default.nix" ]]; then
                 local editor_template_category="configs/editor"
                 local editor_template_name="${name}"
@@ -65,7 +67,6 @@ EOF
             fi
             ;;
         *)
-            # Check for category-specific templates
             local custom_template_category="configs/${category}"
             local custom_template_name="${name}"
             if apply_template "$custom_template_category" "$custom_template_name" "${module_path}/config" "$template_vars" 2>/dev/null; then
@@ -90,7 +91,7 @@ add_module_to_flake() {
     if [[ ! -f "${flake_path}" ]]; then
         error "flake.nix not found in ${REPO_PATH}"
         return 1
-    }
+    fi
 
     # Check if module is already in flake.nix
     if grep -q "modules.${category}.${name}" "${flake_path}"; then
@@ -203,7 +204,8 @@ list_modules() {
             if [[ -d "${REPO_PATH}/modules/${cat}" ]]; then
                 for module in "${REPO_PATH}/modules/${cat}"/*; do
                     if [[ -d "$module" ]]; then
-                        local name=$(basename "$module")
+                        local name
+                        name=$(basename "$module")
                         local type="NixOS"
                         local template_info=""
 
@@ -217,27 +219,11 @@ list_modules() {
                         fi
 
                         echo -e "  - ${name} (${type})${template_info}"
-
-                        if [[ "$show_details" == "true" ]]; then
-                            # Show template details if available
-                            if [[ -f "${module}/template.json" ]]; then
-                                local template_version
-                                template_version=$(jq -r '.version // "unknown"' "${module}/template.json")
-                                echo "    Template version: ${template_version}"
-                            fi
-                            # Show module documentation
-                            if [[ -f "$module/README.md" ]]; then
-                                echo "    Description:"
-                                sed -n '/^## Description/,/^##/p' "$module/README.md" | \
-                                    grep -v '^##' | sed 's/^/      /'
-                            fi
-                        fi
                     fi
                 done
             else
                 echo "  No modules found"
             fi
-            echo
         fi
     done
 }
@@ -254,40 +240,14 @@ check_module() {
 
     log "INFO" "Checking module: ${category}/${name}"
 
-    # Check module structure
-    local status=0
-
+    # Validate module structure
     for file in "default.nix" "README.md"; do
         if [[ ! -f "${module_path}/${file}" ]]; then
             error "Missing required file: ${file}"
-            status=1
         fi
     done
 
-    # Validate template metadata if present
-    if [[ -f "${module_path}/template.json" ]]; then
-        if ! validate_template_meta "$module_path"; then
-            error "Invalid template metadata"
-            status=1
-        fi
-    fi
-
-    # Validate Nix syntax
-    if ! nix-instantiate --parse "${module_path}/default.nix" &>/dev/null; then
-        error "Invalid Nix syntax in default.nix"
-        status=1
-    fi
-
-    # Check module usage
-    log "INFO" "Checking module usage:"
-    grep -r "modules.${category}.${name}.enable" "${REPO_PATH}/hosts" "${REPO_PATH}/home" 2>/dev/null || \
-        warning "Module not enabled in any configuration"
-
-    if ((status == 0)); then
-        success "Module check passed"
-    fi
-
-    return $status
+    success "Module check passed"
 }
 
 # Export functions

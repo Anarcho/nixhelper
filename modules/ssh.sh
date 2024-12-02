@@ -15,7 +15,6 @@ check_existing_ssh_config() {
 
     if grep -qw "^Host ${search_hostname}$" "$ssh_config"; then
         success "Found existing SSH configuration for ${search_hostname}"
-        awk "/^Host ${search_hostname}\$/,/^$|^Host /" "$ssh_config"
         return 0
     fi
 
@@ -23,64 +22,58 @@ check_existing_ssh_config() {
     return 1
 }
 
+
 setup_ssh_keys() {
-    local hostname="${1:-${VM_HOST}}"
-    local username="${2:-${VM_USER}}"
-    local port="${3:-${VM_PORT}}"
+    local hostname="$1"          # Hostname or IP for the remote host
+    local username="${2:-$USER}" # Default to current user if not provided
+    local port="${3:-22}"        # Default to port 22
+    local ip_address="${4}"
     local ssh_dir="$HOME/.ssh"
     local ssh_config="$ssh_dir/config"
 
     log "INFO" "Setting up SSH configuration for ${hostname}"
 
-    # Create backup before making changes
+    # Backup existing SSH configuration
     backup_ssh_config
 
     # Ensure SSH directory exists with correct permissions
     ensure_directory "$ssh_dir"
     chmod 700 "$ssh_dir"
 
-    # Check for existing key
-    local key_types=("ed25519" "rsa")
-    local ssh_key=""
+    # Set SSH key paths dynamically based on hostname
+    local ssh_key="${ssh_dir}/${hostname}"
+    local pub_key="${ssh_key}.pub"
 
-    for type in "${key_types[@]}"; do
-        if [[ -f "$ssh_dir/id_${type}" ]]; then
-            ssh_key="$ssh_dir/id_${type}"
-            success "Found existing ${type} key: ${ssh_key}"
-            break
-        fi
-    done
+    # Generate a new key, overwriting any existing key for the host
+    log "INFO" "Generating a new SSH key for ${hostname}..."
+    ssh-keygen -t ed25519 -C "${username}@${hostname}" -f "$ssh_key" -N "" || {
+        error "Failed to generate SSH key for ${hostname}"
+        return 1
+    }
+    success "Generated new SSH key: ${ssh_key}"
 
-    # Generate new key if needed
-    if [[ -z "$ssh_key" ]]; then
-        log "INFO" "No SSH key found. Generating new ed25519 key..."
-        
-        # Get email for key
-        local email
-        if [[ -n "$(git config user.email)" ]]; then
-            email="$(git config user.email)"
-        else
-            read -p "Enter email for SSH key: " email
-        fi
-
-        # Generate key
-        ssh-keygen -t ed25519 -C "${email}" -f "$ssh_dir/id_ed25519" || {
-            error "Failed to generate SSH key"
-            return 1
-        }
-        ssh_key="$ssh_dir/id_ed25519"
-    fi
-
-    # Ensure SSH config exists
+    # Ensure SSH config file exists
     touch "$ssh_config"
     chmod 600 "$ssh_config"
 
-    # Add host configuration if it doesn't exist
-    if ! check_existing_ssh_config "$hostname"; then
-        cat >> "$ssh_config" <<EOF
+    # Remove any existing configuration for the host
+    log "INFO" "Removing any existing SSH configuration for ${hostname}..."
+    awk -v host="$hostname" '
+        BEGIN { removed = 0 }
+        /^Host / {
+            if ($2 == host) {
+                removed = 1
+                next
+            }
+        }
+        !removed || /^$/ { removed = 0; print }
+    ' "$ssh_config" > "${ssh_config}.tmp" && mv "${ssh_config}.tmp" "$ssh_config"
+
+    # Add the new SSH config entry
+    cat >> "$ssh_config" <<EOF
 
 Host ${hostname}
-    HostName ${VM_HOST}
+    HostName ${ip_address}
     User ${username}
     Port ${port}
     IdentityFile ${ssh_key}
@@ -88,27 +81,27 @@ Host ${hostname}
     ServerAliveInterval 60
     ServerAliveCountMax 2
 EOF
-        success "Added SSH configuration for ${hostname}"
-    fi
+    success "Added SSH configuration for ${hostname}"
 
-    # Copy key to remote host
-    log "INFO" "Copying SSH key to remote host..."
-    if ! ssh-copy-id -i "${ssh_key}.pub" -p "$port" "${username}@${VM_HOST}"; then
+    # Attempt to copy the public key to the remote host
+    log "INFO" "Copying SSH key to the remote host (${hostname})..."
+    if ! ssh-copy-id -i "$pub_key" -p "$port" "${username}@${ip_address}"; then
         warning "Could not automatically copy SSH key. Manual copy may be required."
         echo "Run this command on the remote host:"
-        echo "mkdir -p ~/.ssh && echo '$(cat "${ssh_key}.pub")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+        echo "mkdir -p ~/.ssh && echo '$(cat "$pub_key")' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
     else
-        success "SSH key copied to remote host"
+        success "SSH key successfully copied to ${hostname}"
     fi
 
-    # Test connection
-    if ssh -q -p "$port" "${username}@${VM_HOST}" exit; then
-        success "SSH connection test successful"
+    # Test the SSH connection
+    if ssh -q -p "$port" -o BatchMode=yes "${username}@${hostname}" exit; then
+        success "SSH connection to ${hostname} verified successfully"
     else
-        error "SSH connection test failed"
+        error "SSH connection test failed for ${hostname}"
         return 1
     fi
 }
+
 
 backup_ssh_config() {
     local ssh_dir="$HOME/.ssh"

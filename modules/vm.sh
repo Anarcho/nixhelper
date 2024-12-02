@@ -8,40 +8,30 @@ source "${SCRIPT_DIR}/ssh.sh"
 
 check_vm_connectivity() {
     local host_name="$1"
+    local target_ip="" target_user="" target_port=""
     
-    if [[ "${VM_HOST}" == "localhost" ]]; then
-        debug "Using localhost, no VM connectivity check needed"
-        return 0
+    # Get host-specific configuration
+    target_ip=$(get_vm_config "$host_name" "IP")
+    target_user=$(get_vm_config "$host_name" "USER")
+    target_port=$(get_vm_config "$host_name" "PORT")
+
+    if [[ -z "$target_ip" || -z "$target_user" || -z "$target_port" ]]; then
+        error "Missing VM configuration for ${host_name}"
+        return 1
     fi
 
-    # Get host-specific config if available
-    local target_host="${VM_HOST}"
-    local target_user="${VM_USER}"
-    local target_port="${VM_PORT}"
-    local target_ip=""
-    
-    if [[ -n "$host_name" ]]; then
-        target_ip=$(get_vm_config "$host_name" "IP")
-        target_user=$(get_vm_config "$host_name" "USER")
-        target_port=$(get_vm_config "$host_name" "PORT")
-        [[ -n "$target_ip" ]] && target_host="$target_ip"
-    fi
-
-    log "INFO" "Checking VM connectivity for ${target_host}"
+    log "INFO" "Checking VM connectivity for ${target_ip}"
 
     if ! check_internet; then
         error "No internet connection available"
         return 1
     fi
 
-    if ssh -q -p "${target_port}" "${target_user}@${target_host}" exit 2>/dev/null; then
+    if ssh -q -p "${target_port}" "${target_user}@${target_ip}" exit 2>/dev/null; then
         success "VM connection successful"
         return 0
     else
-        error "Cannot connect to VM at ${target_host}"
-        if confirm_action "Would you like to configure SSH for this VM?"; then
-            setup_ssh_keys "${host_name}" "${target_user}" "${target_port}" "${target_ip}"
-        fi
+        error "Cannot connect to VM at ${target_ip}"
         return 1
     fi
 }
@@ -50,23 +40,20 @@ sync_to_vm() {
     local host_name="$1"
     local source_path="${REPO_PATH}"
     local extra_excludes=("${@:2}")
+    local target_ip="" target_user="" target_port="" target_path=""
 
-    # Get host-specific config
-    local target_host="${VM_HOST}"
-    local target_user="${VM_USER}"
-    local target_port="${VM_PORT}"
-    local target_path="${VM_PATH}"
-    local target_ip=""
+    # Get host-specific configuration
+    target_ip=$(get_vm_config "$host_name" "IP")
+    target_user=$(get_vm_config "$host_name" "USER")
+    target_port=$(get_vm_config "$host_name" "PORT")
+    target_path=$(get_vm_config "$host_name" "PATH")
 
-    if [[ -n "$host_name" ]]; then
-        target_ip=$(get_vm_config "$host_name" "IP")
-        target_user=$(get_vm_config "$host_name" "USER")
-        target_port=$(get_vm_config "$host_name" "PORT")
-        target_path=$(get_vm_config "$host_name" "PATH")
-        [[ -n "$target_ip" ]] && target_host="$target_ip"
+    if [[ -z "$target_ip" || -z "$target_user" || -z "$target_port" ]]; then
+        error "Missing VM configuration for ${host_name}"
+        return 1
     fi
 
-    log "INFO" "Syncing files to VM ${target_host} for host ${host_name}"
+    log "INFO" "Syncing files to VM ${target_ip} for host ${host_name}"
 
     # Check VM connectivity first
     if ! check_vm_connectivity "$host_name"; then
@@ -92,11 +79,61 @@ sync_to_vm() {
     if rsync -avz --delete "${exclude_opts[@]}" \
         -e "ssh -p ${target_port}" \
         "${source_path}/" \
-        "${target_user}@${target_host}:${target_path}/"; then
+        "${target_user}@${target_ip}:${target_path:-/home/${target_user}/nixos-config}/"; then
         success "Files synced to VM successfully"
+        return 0
     else
         error "Failed to sync files to VM"
         return 1
+    fi
+}
+
+setup_vm() {
+    local host_name="$1"
+    local username="" target_ip="" target_port="" current_config=""
+
+    log "INFO" "Setting up VM configuration for ${host_name}"
+
+    # Get existing configuration if any
+    current_config=$(show_vm_config "$host_name" 2>/dev/null)
+
+    # Only prompt for values if they're not already set
+    if [[ -z "$(get_vm_config "$host_name" "USER")" ]]; then
+        read -p "VM Username: " username
+        if [[ -n "$username" ]]; then
+            set_vm_config "$host_name" "USER" "${username}"
+        fi
+    fi
+
+    if [[ -z "$(get_vm_config "$host_name" "IP")" ]]; then
+        read -p "VM IP Address: " target_ip
+        if [[ -n "$target_ip" ]]; then
+            set_vm_config "$host_name" "IP" "${target_ip}"
+        fi
+    fi
+
+    if [[ -z "$(get_vm_config "$host_name" "PORT")" ]]; then
+        read -p "VM Port [22]: " target_port
+        set_vm_config "$host_name" "PORT" "${target_port:-22}"
+    fi
+
+    # Set default path if not specified
+    if [[ -z "$(get_vm_config "$host_name" "PATH")" ]]; then
+        set_vm_config "$host_name" "PATH" "/home/$(get_vm_config "$host_name" "USER")/nixos-config"
+    fi
+
+    success "VM configuration updated successfully"
+    show_vm_config "$host_name"
+    
+    # Test connectivity and offer SSH setup if needed
+    if ! check_vm_connectivity "$host_name"; then
+        if confirm_action "Would you like to setup SSH for this VM?"; then
+            setup_ssh_keys \
+                "$host_name" \
+                "$(get_vm_config "$host_name" "USER")" \
+                "$(get_vm_config "$host_name" "PORT")" \
+                "$(get_vm_config "$host_name" "IP")"
+        fi
     fi
 }
 
@@ -104,23 +141,20 @@ deploy_to_vm() {
     local host_name="$1"
     local deploy_type="${2:-all}"
     local user_name="${3:-$USER}"
+    local target_ip="" target_user="" target_port="" target_path=""
 
-    # Get host-specific config
-    local target_host="${VM_HOST}"
-    local target_user="${VM_USER}"
-    local target_port="${VM_PORT}"
-    local target_path="${VM_PATH}"
-    local target_ip=""
+    # Get host-specific configuration
+    target_ip=$(get_vm_config "$host_name" "IP")
+    target_user=$(get_vm_config "$host_name" "USER")
+    target_port=$(get_vm_config "$host_name" "PORT")
+    target_path=$(get_vm_config "$host_name" "PATH")
 
-    if [[ -n "$host_name" ]]; then
-        target_ip=$(get_vm_config "$host_name" "IP")
-        target_user=$(get_vm_config "$host_name" "USER")
-        target_port=$(get_vm_config "$host_name" "PORT")
-        target_path=$(get_vm_config "$host_name" "PATH")
-        [[ -n "$target_ip" ]] && target_host="$target_ip"
+    if [[ -z "$target_ip" || -z "$target_user" || -z "$target_port" ]]; then
+        error "Missing VM configuration for ${host_name}"
+        return 1
     fi
 
-    log "INFO" "Deploying ${host_name} configuration to VM ${target_host}"
+    log "INFO" "Deploying ${host_name} configuration to VM ${target_ip}"
 
     # Create backup before deployment
     create_backup
@@ -132,7 +166,7 @@ deploy_to_vm() {
 
     # Build configuration on VM
     log "INFO" "Building configuration on VM"
-    local build_cmd="cd ${target_path} && "
+    local build_cmd="cd ${target_path:-/home/${target_user}/nixos-config} && "
 
     case "${deploy_type}" in
         "nixos")
@@ -151,8 +185,9 @@ deploy_to_vm() {
             ;;
     esac
 
-    if ssh -p "${target_port}" "${target_user}@${target_host}" "${build_cmd}"; then
+    if ssh -p "${target_port}" "${target_user}@${target_ip}" "${build_cmd}"; then
         success "Deployment completed successfully"
+        return 0
     else
         error "Deployment failed"
         if confirm_action "Would you like to rollback?"; then
@@ -162,108 +197,21 @@ deploy_to_vm() {
     fi
 }
 
-rollback_deployment() {
-    local host_name="$1"
-    local deploy_type="$2"
-
-    # Get host-specific config
-    local target_host="${VM_HOST}"
-    local target_user="${VM_USER}"
-    local target_port="${VM_PORT}"
-    local target_path="${VM_PATH}"
-    local target_ip=""
-
-    if [[ -n "$host_name" ]]; then
-        target_ip=$(get_vm_config "$host_name" "IP")
-        target_user=$(get_vm_config "$host_name" "USER")
-        target_port=$(get_vm_config "$host_name" "PORT")
-        target_path=$(get_vm_config "$host_name" "PATH")
-        [[ -n "$target_ip" ]] && target_host="$target_ip"
-    fi
-
-    log "INFO" "Rolling back VM deployment"
-
-    local rollback_cmd="cd ${target_path} && "
-    case "${deploy_type}" in
-        "nixos"|"all")
-            rollback_cmd+="sudo nixos-rebuild switch --rollback"
-            ;;
-        "home-manager")
-            rollback_cmd+="home-manager generations rollback"
-            ;;
-    esac
-
-    if ssh -p "${target_port}" "${target_user}@${target_host}" "${rollback_cmd}"; then
-        success "Rollback completed successfully"
-    else
-        error "Rollback failed"
-        return 1
-    fi
-}
-
-setup_vm() {
-    local host_name="$1"
-
-    log "INFO" "Setting up VM configuration for ${host_name}"
-
-    # Configure VM settings
-    echo "Enter VM configuration details:"
-    read -p "VM Username (current: ${VM_USER}): " new_user
-    read -p "VM Hostname (current: ${VM_HOST}): " new_host
-    read -p "VM IP Address: " ip_address
-    read -p "VM Port (current: ${VM_PORT}): " new_port
-    read -p "VM Path (current: ${VM_PATH}): " new_path
-
-    # Update only if new values provided
-    [ -n "$new_user" ] && VM_USER="$new_user"
-    [ -n "$new_host" ] && VM_HOST="$new_host"
-    [ -n "$new_port" ] && VM_PORT="$new_port"
-    [ -n "$new_path" ] && VM_PATH="$new_path"
-
-    # Save host-specific configuration if hostname provided
-    if [[ -n "$host_name" ]]; then
-        set_vm_config "$host_name" "USER" "${new_user:-${VM_USER}}"
-        set_vm_config "$host_name" "HOST" "${new_host:-${VM_HOST}}"
-        set_vm_config "$host_name" "IP" "${ip_address}"
-        set_vm_config "$host_name" "PORT" "${new_port:-${VM_PORT}}"
-        set_vm_config "$host_name" "PATH" "${new_path:-${VM_PATH}}"
-    fi
-
-    # Save global configuration
-    set_config "VM_USER" "${VM_USER}"
-    set_config "VM_HOST" "${VM_HOST}"
-    set_config "VM_PORT" "${VM_PORT}"
-    set_config "VM_PATH" "${VM_PATH}"
-
-    # Setup SSH keys if needed
-    if ! check_vm_connectivity "$host_name" && confirm_action "Would you like to setup SSH keys?"; then
-        setup_ssh_keys "${host_name}" "${VM_USER}" "${VM_PORT}" "${ip_address}"
-    fi
-
-    success "VM configuration updated successfully"
-    
-    if [[ -n "$host_name" ]]; then
-        show_vm_config "$host_name"
-    fi
-}
-
 get_vm_status() {
     local host_name="$1"
+    local target_ip="" target_user="" target_port=""
 
-    # Get host-specific config
-    local target_host="${VM_HOST}"
-    local target_user="${VM_USER}"
-    local target_port="${VM_PORT}"
-    local target_ip=""
+    # Get host-specific configuration
+    target_ip=$(get_vm_config "$host_name" "IP")
+    target_user=$(get_vm_config "$host_name" "USER")
+    target_port=$(get_vm_config "$host_name" "PORT")
 
-    if [[ -n "$host_name" ]]; then
-        target_ip=$(get_vm_config "$host_name" "IP")
-        target_user=$(get_vm_config "$host_name" "USER")
-        target_port=$(get_vm_config "$host_name" "PORT")
-        [[ -n "$target_ip" ]] && target_host="$target_ip"
+    if [[ -z "$target_ip" || -z "$target_user" || -z "$target_port" ]]; then
+        error "Missing VM configuration for ${host_name}"
+        return 1
     fi
 
-    log "INFO" "Checking VM status for ${host_name} (${target_host})"
+    log "INFO" "Checking VM status for ${host_name} (${target_ip})"
 
     if ! check_vm_connectivity "$host_name"; then
         return 1
@@ -275,25 +223,65 @@ get_vm_status() {
 
     # Check NixOS version
     echo -e "${BOLD}NixOS Version:${NC}"
-    ssh -p "${target_port}" "${target_user}@${target_host}" "nixos-version"
+    ssh -p "${target_port}" "${target_user}@${target_ip}" "nixos-version"
 
     # Check system status
     echo -e "\n${BOLD}System Status:${NC}"
-    ssh -p "${target_port}" "${target_user}@${target_host}" "uptime"
+    ssh -p "${target_port}" "${target_user}@${target_ip}" "uptime"
 
     # Check disk usage
     echo -e "\n${BOLD}Disk Usage:${NC}"
-    ssh -p "${target_port}" "${target_user}@${target_host}" "df -h /"
+    ssh -p "${target_port}" "${target_user}@${target_ip}" "df -h /"
 
     # Check memory usage
     echo -e "\n${BOLD}Memory Usage:${NC}"
-    ssh -p "${target_port}" "${target_user}@${target_host}" "free -h"
+    ssh -p "${target_port}" "${target_user}@${target_ip}" "free -h"
 
     # Check current generations
     echo -e "\n${BOLD}NixOS Generations:${NC}"
-    ssh -p "${target_port}" "${target_user}@${target_host}" "nix-env --list-generations --profile /nix/var/nix/profiles/system"
+    ssh -p "${target_port}" "${target_user}@${target_ip}" "nix-env --list-generations --profile /nix/var/nix/profiles/system"
+}
+
+rollback_deployment() {
+    local host_name="$1"
+    local deploy_type="$2"
+    local target_ip="" target_user="" target_port="" target_path=""
+
+    # Get host-specific configuration
+    target_ip=$(get_vm_config "$host_name" "IP")
+    target_user=$(get_vm_config "$host_name" "USER")
+    target_port=$(get_vm_config "$host_name" "PORT")
+    target_path=$(get_vm_config "$host_name" "PATH")
+
+    if [[ -z "$target_ip" || -z "$target_user" || -z "$target_port" ]]; then
+        error "Missing VM configuration for ${host_name}"
+        return 1
+    fi
+
+    log "INFO" "Rolling back VM deployment"
+
+    local rollback_cmd="cd ${target_path:-/home/${target_user}/nixos-config} && "
+    case "${deploy_type}" in
+        "nixos"|"all")
+            rollback_cmd+="sudo nixos-rebuild switch --rollback"
+            ;;
+        "home-manager")
+            rollback_cmd+="home-manager generations rollback"
+            ;;
+        *)
+            error "Invalid deploy type: ${deploy_type}"
+            return 1
+            ;;
+    esac
+
+    if ssh -p "${target_port}" "${target_user}@${target_ip}" "${rollback_cmd}"; then
+        success "Rollback completed successfully"
+        return 0
+    else
+        error "Rollback failed"
+        return 1
+    fi
 }
 
 # Export functions
-export -f check_vm_connectivity sync_to_vm deploy_to_vm
-export -f rollback_deployment setup_vm get_vm_status
+export -f check_vm_connectivity sync_to_vm deploy_to_vm setup_vm get_vm_status rollback_deployment

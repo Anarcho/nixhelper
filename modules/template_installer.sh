@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 
+# Load helper scripts
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/logging.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/utils.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/template_manager.sh"
+
+# Directory constants
+readonly TEMPLATE_DIR="${TEMPLATE_BASE_DIR}"
+readonly BASE_TEMPLATES="${TEMPLATE_DIR}/base"
+readonly DEV_TEMPLATES="${TEMPLATE_DIR}/development"
+readonly APP_TEMPLATES="${TEMPLATE_DIR}/applications"
+
 
 # Install base templates
 install_base_templates() {
@@ -583,24 +591,18 @@ EOF
 # Main installation function
 install_default_templates() {
     local force="${1:-false}"
-    
     log "INFO" "Installing default templates..."
 
-    # Initialize template directories
-    if ! init_template_dirs; then
-        error "Failed to initialize template directories"
+    # Initialize template system
+    if ! init_template_system; then
+        error "Failed to initialize template system"
         return 1
     fi
 
-    if ! install_base_templates "$force"; then
-        error "Failed to install base templates"
-        return 1
-    fi
-
-    if ! install_config_templates "$force"; then
-        error "Failed to install config templates"
-        return 1
-    fi
+    # Install templates by category
+    install_base_templates "$force" || return 1
+    install_development_templates "$force" || return 1
+    install_application_templates "$force" || return 1
 
     success "Default templates installed successfully"
     return 0
@@ -620,6 +622,447 @@ create_template_meta() {
     return 0
 }
 
+create_dev_template() {
+    local name="$1"
+    local description="$2"
+    local template_dir="${DEV_TEMPLATES}/${name}"
+
+    ensure_directory "$template_dir" || return 1
+    cat > "${template_dir}/template.json" <<EOF
+{
+    "schemaVersion": "1.0",
+    "name": "${name}",
+    "version": "1.0.0",
+    "description": "${description}",
+    "category": "development",
+    "type": "home-manager",
+    "variables": {},
+    "compatibility": ["nixos", "darwin"]
+}
+EOF
+
+    return 0
+}
+
+
+i
+install_application_templates() {
+    local force="${1:-false}"
+    log "INFO" "Installing application templates..."
+
+    # Create application categories
+    ensure_directory "${APP_TEMPLATES}/editor"
+    ensure_directory "${APP_TEMPLATES}/terminal"
+    ensure_directory "${APP_TEMPLATES}/wm"
+    ensure_directory "${APP_TEMPLATES}/shell"
+
+    # Install editor templates
+    create_app_template "editor/neovim" "Neovim Editor Configuration" || return 1
+    create_app_template "editor/vim" "Vim Editor Configuration" || return 1
+
+    # Install terminal templates
+    create_app_template "terminal/kitty" "Kitty Terminal Configuration" || return 1
+    create_app_template "terminal/alacritty" "Alacritty Terminal Configuration" || return 1
+
+    # Install window manager templates
+    create_app_template "wm/sway" "Sway Window Manager Configuration" || return 1
+    create_app_template "wm/hyprland" "Hyprland Window Manager Configuration" || return 1
+
+    # Install shell templates
+    create_app_template "shell/zsh" "Zsh Shell Configuration" || return 1
+    create_app_template "shell/fish" "Fish Shell Configuration" || return 1
+
+    success "Application templates installed successfully"
+    return 0
+}
+
+
+
+
+install_base_templates() {
+    local force="${1:-false}"
+    log "INFO" "Installing base templates..."
+
+    # Install flake template
+    install_flake_template || return 1
+
+    # Install module templates
+    install_module_templates || return 1
+
+    # Install host templates
+    install_host_templates || return 1
+
+    success "Base templates installed successfully"
+    return 0
+}
+
+install_flake_template() {
+    # Create flake template directory and metadata
+    create_base_template "flake" "Base NixOS Flake Configuration" || return 1
+
+    # Create template files
+    cat > "${BASE_TEMPLATES}/flake/template.json" <<'EOF'
+{
+    "schemaVersion": "1.0",
+    "name": "flake",
+    "version": "1.0.0",
+    "description": "Base NixOS Flake Configuration",
+    "category": "base",
+    "type": "nix",
+    "dependencies": [],
+    "variables": {
+        "description": {
+            "type": "string",
+            "description": "Flake description",
+            "default": "NixOS Configuration"
+        }
+    },
+    "compatibility": ["nixos", "darwin"]
+}
+EOF
+
+    cat > "${BASE_TEMPLATES}/flake/flake.nix" <<'EOF'
+{
+  description = "{{description}}";
+
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { self, nixpkgs, nixpkgs-stable, home-manager, ... } @ inputs:
+    let
+      inherit (self) outputs;
+      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
+    in
+    {
+      packages = forAllSystems (system: import ./pkgs nixpkgs.legacyPackages.${system});
+      nixosConfigurations = {
+        # Host configurations will be added here
+      };
+      homeConfigurations = {
+        # User configurations will be added here
+      };
+    };
+}
+EOF
+
+    return 0
+}
+
+install_module_templates() {
+    # Install NixOS module template
+    create_base_template "modules/nixos" "NixOS Module Template" || return 1
+    cat > "${BASE_TEMPLATES}/modules/nixos/template.json" <<'EOF'
+{
+    "schemaVersion": "1.0",
+    "name": "nixos-module",
+    "version": "1.0.0",
+    "description": "Basic NixOS Module Template",
+    "category": "base",
+    "type": "nixos",
+    "dependencies": [],
+    "variables": {
+        "category": {
+            "type": "string",
+            "description": "Module category",
+            "default": ""
+        },
+        "name": {
+            "type": "string",
+            "description": "Module name",
+            "default": ""
+        }
+    },
+    "compatibility": ["nixos"]
+}
+EOF
+
+    cat > "${BASE_TEMPLATES}/modules/nixos/default.nix" <<'EOF'
+{ config, lib, pkgs, ... }:
+
+with lib;
+let
+    cfg = config.modules.{{category}}.{{name}};
+in {
+    options.modules.{{category}}.{{name}} = {
+        enable = mkEnableOption "Enable {{name}} module";
+        settings = mkOption {
+            type = types.attrsOf types.anything;
+            default = {};
+            description = "Module settings for {{name}}";
+        };
+    };
+
+    config = mkIf cfg.enable {
+        # Module implementation goes here
+    };
+}
+EOF
+
+    # Install home-manager module template
+    create_base_template "modules/home-manager" "Home Manager Module Template" || return 1
+    cat > "${BASE_TEMPLATES}/modules/home-manager/template.json" <<'EOF'
+{
+    "schemaVersion": "1.0",
+    "name": "home-manager-module",
+    "version": "1.0.0",
+    "description": "Basic Home-Manager Module Template",
+    "category": "base",
+    "type": "home-manager",
+    "dependencies": [],
+    "variables": {
+        "category": {
+            "type": "string",
+            "description": "Module category",
+            "default": ""
+        },
+        "name": {
+            "type": "string",
+            "description": "Module name",
+            "default": ""
+        }
+    },
+    "compatibility": ["nixos", "darwin"]
+}
+EOF
+
+    cat > "${BASE_TEMPLATES}/modules/home-manager/default.nix" <<'EOF'
+{ config, lib, pkgs, ... }:
+
+with lib;
+let
+    cfg = config.modules.{{category}}.{{name}};
+in {
+    options.modules.{{category}}.{{name}} = {
+        enable = mkEnableOption "Enable {{name}} module";
+        settings = mkOption {
+            type = types.attrsOf types.anything;
+            default = {};
+            description = "Module settings for {{name}}";
+        };
+    };
+
+    config = mkIf cfg.enable {
+        home = {
+            # Home-manager specific configuration
+        };
+
+        programs = {
+            # Program configurations
+        };
+    };
+}
+EOF
+
+    return 0
+}
+
+install_host_templates() {
+    # Create host configuration template
+    create_base_template "host" "NixOS Host Configuration" || return 1
+    cat > "${BASE_TEMPLATES}/host/template.json" <<'EOF'
+{
+    "schemaVersion": "1.0",
+    "name": "host",
+    "version": "1.0.0",
+    "description": "NixOS Host Configuration",
+    "category": "base",
+    "type": "nixos",
+    "variables": {
+        "hostname": {
+            "type": "string",
+            "description": "Host name",
+            "default": "nixos"
+        },
+        "username": {
+            "type": "string",
+            "description": "Primary user name",
+            "default": "nixos"
+        },
+        "timezone": {
+            "type": "string",
+            "description": "System timezone",
+            "default": "UTC"
+        }
+    },
+    "compatibility": ["nixos"]
+}
+EOF
+
+    cat > "${BASE_TEMPLATES}/host/configuration.nix" <<'EOF'
+{ config, lib, pkgs, ... }:
+
+{
+  imports = [ ./hardware-configuration.nix ];
+
+  networking.hostName = "{{hostname}}";
+  time.timeZone = "{{timezone}}";
+
+  users.users.{{username}} = {
+    isNormalUser = true;
+    extraGroups = [ "wheel" "networkmanager" ];
+  };
+
+  environment.systemPackages = with pkgs; [
+    wget
+    curl
+    git
+    vim
+  ];
+
+  system.stateVersion = "24.05";
+}
+EOF
+
+    return 0
+}
+
+install_development_templates() {
+    local force="${1:-false}"
+    log "INFO" "Installing development templates..."
+
+    # Install Rust template
+    create_dev_template "rust" "Rust Development Environment" || return 1
+    create_rust_template || return 1
+
+    # Install Python template
+    create_dev_template "python" "Python Development Environment" || return 1
+    create_python_template || return 1
+
+    # Install Node.js template
+    create_dev_template "node" "Node.js Development Environment" || return 1
+    create_node_template || return 1
+
+    success "Development templates installed successfully"
+    return 0
+}
+
+create_rust_template() {
+    cat > "${DEV_TEMPLATES}/rust/default.nix" <<'EOF'
+{ config, lib, pkgs, ... }:
+
+{
+  home.packages = with pkgs; [
+    rustc
+    cargo
+    rust-analyzer
+    clippy
+    rustfmt
+  ];
+
+  home.file.".cargo/config.toml".text = ''
+    [target.{{target_triple}}]
+    linker = "{{linker}}"
+  '';
+}
+EOF
+    return 0
+}
+
+create_python_template() {
+    cat > "${DEV_TEMPLATES}/python/default.nix" <<'EOF'
+{ config, lib, pkgs, ... }:
+
+{
+  home.packages = with pkgs; [
+    python3
+    python3Packages.pip
+    python3Packages.black
+    python3Packages.pylint
+    python3Packages.pytest
+  ];
+
+  home.file.".config/pip/pip.conf".text = ''
+    [global]
+    index-url = {{pip_index}}
+  '';
+}
+EOF
+    return 0
+}
+
+create_node_template() {
+    cat > "${DEV_TEMPLATES}/node/default.nix" <<'EOF'
+{ config, lib, pkgs, ... }:
+
+{
+  home.packages = with pkgs; [
+    nodejs
+    nodePackages.npm
+    nodePackages.yarn
+  ];
+
+  home.file.".npmrc".text = ''
+    prefix = {{npm_prefix}}
+    registry = {{npm_registry}}
+  '';
+}
+EOF
+    return 0
+}
+
+create_base_template() {
+    local name="$1"
+    local description="$2"
+    local template_dir="${BASE_TEMPLATES}/${name}"
+
+    ensure_directory "$template_dir" || return 1
+    return 0
+}
+
+create_dev_template() {
+    local name="$1"
+    local description="$2"
+    local template_dir="${DEV_TEMPLATES}/${name}"
+
+    ensure_directory "$template_dir" || return 1
+    cat > "${template_dir}/template.json" <<EOF
+{
+    "schemaVersion": "1.0",
+    "name": "${name}",
+    "version": "1.0.0",
+    "description": "${description}",
+    "category": "development",
+    "type": "home-manager",
+    "variables": {},
+    "compatibility": ["nixos", "darwin"]
+}
+EOF
+
+    return 0
+}
+
+create_app_template() {
+    local path="$1"
+    local description="$2"
+    local name=$(basename "$path")
+    local category=$(dirname "$path")
+    local template_dir="${APP_TEMPLATES}/${path}"
+
+    ensure_directory "$template_dir" || return 1
+    cat > "${template_dir}/template.json" <<EOF
+{
+    "schemaVersion": "1.0",
+    "name": "${name}",
+    "version": "1.0.0",
+    "description": "${description}",
+    "category": "${category}",
+    "type": "home-manager",
+    "variables": {},
+    "compatibility": ["nixos", "darwin"]
+}
+EOF
+
+    return 0
+}
+
 # Export functions
-export -f create_template_meta
-export -f install_default_templates install_base_templates install_config_templates
+export -f install_default_templates install_base_templates
+export -f install_development_templates install_application_templates
+export -f create_base_template create_dev_template create_app_template
